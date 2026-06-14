@@ -4,9 +4,9 @@ import base64
 import os
 import hashlib
 
-__module_name__ = "Pragmatic Linux E2EE"
-__module_version__ = "1.4"
-__module_description__ = "Szyfrowanie komendą /s dla pełnego bezpieczeństwa"
+__module_name__ = "E2E"
+__module_version__ = "1.8"
+__module_description__ = "Szyfrowanie komendą /s"
 
 PRIV_KEY_PATH = "/tmp/hc_priv.pem"
 SHARED_SECRET = None
@@ -16,9 +16,13 @@ def run_cmd(cmd, stdin_data=None):
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = proc.communicate(input=stdin_data)
         if proc.returncode != 0:
+            if stderr:
+                # Wypisujemy błąd OpenSSL bezpośrednio w oknie HexChata
+                hexchat.prnt(f"❌ OpenSSL Err: {stderr.decode('utf-8', errors='ignore').strip()}")
             return None
         return stdout
-    except Exception:
+    except Exception as e:
+        hexchat.prnt(f"❌ Subprocess Exception: {str(e)}")
         return None
 
 def init_dh(word, word_eol, userdata):
@@ -55,7 +59,8 @@ def derive_dh(word, word_eol, userdata):
 
     secret_raw = run_cmd(["openssl", "pkeyutl", "-derive", "-inkey", PRIV_KEY_PATH, "-peerkey", peer_path, "-peerform", "DER"])
     if secret_raw:
-        SHARED_SECRET = base64.b64encode(secret_raw.strip()).decode('utf-8')[:32]
+        # POPRAWKA: Pełny klucz bez sztucznego obcinania do [:32]
+        SHARED_SECRET = base64.b64encode(secret_raw.strip()).decode('utf-8').strip()
         fingerprint = hashlib.sha256(SHARED_SECRET.encode()).hexdigest()[:4].upper()
         hexchat.prnt(f"=== SUKCES === Suma kontrolna: [{fingerprint}]")
     else:
@@ -64,38 +69,62 @@ def derive_dh(word, word_eol, userdata):
     return hexchat.EAT_ALL
 
 def secure_send_cb(word, word_eol, userdata):
-    """Obsługa komendy /s <tekst>"""
     global SHARED_SECRET
     if len(word) < 2:
         hexchat.prnt("Użycie: /s <bezpieczna wiadomość>")
         return hexchat.EAT_ALL
 
     if not SHARED_SECRET:
-        hexchat.prnt("BŁĄD: Najpierw uzgodnij klucz przez /crypto_init i /crypto_derive!")
+        hexchat.prnt("BŁĄD: Najpierw uzgodnij klucz!")
         return hexchat.EAT_ALL
 
-    message = word_eol[1]
-    enc_raw = run_cmd(["openssl", "enc", "-aes-256-cbc", "-salt", "-k", SHARED_SECRET, "-a"], stdin_data=message.encode('utf-8'))
+    message = word_eol[1].strip()
+    # Szyfrujemy do czystych bajtów binarnych (brak flagi -a)
+    enc_raw = run_cmd(["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-md", "sha256", "-salt", "-k", SHARED_SECRET], stdin_data=message.encode('utf-8'))
     if enc_raw:
-        encrypted = f"[E2EE]:{enc_raw.decode('utf-8').replace('\\n', '').strip()}"
+        # Kodowanie base64 robimy bezpiecznie w Pythonie bez znaków nowej linii
+        encrypted = f"[E2EE]:{base64.b64encode(enc_raw).decode('utf-8').strip()}"
         channel = hexchat.get_info("channel")
-        # Pchamy w sieć TYLKO i wyłącznie komendę z zaszyfrowanym ciągiem
         hexchat.command(f"PRIVMSG {channel} :{encrypted}")
-        # Drukujemy u siebie ładną kłódkę
-        hexchat.prnt(f"\\t🔒\\t{hexchat.get_info('nick')}\\t{message}")
+        hexchat.prnt(f"\t🔒\t{hexchat.get_info('nick')}\t{message}")
     return hexchat.EAT_ALL
 
 def message_in_hook(word, word_eol, userdata):
-    message = word[1]
-    if message.startswith("[E2EE]:"):
-        sender = word[0]
+    global SHARED_SECRET
+    if len(word) < 4:
+        return hexchat.EAT_NONE
+        
+    full_message = word_eol[3]
+    if full_message.startswith(":"):
+        full_message = full_message[1:]
+        
+    if "[E2EE]:" in full_message:
+        sender = word[0].split("!")[0].lstrip(":")
+
         if not SHARED_SECRET:
-            hexchat.prnt(f"\\t🔒\\t{sender}\\t[Zaszyfrowane - brak klucza]")
+            hexchat.prnt(f"\t🔒\t{sender}\t[Zaszyfrowane - brak klucza]")
             return hexchat.EAT_ALL
-        clean_cipher = message.replace("[E2EE]:", "").strip()
-        dec_raw = run_cmd(["openssl", "enc", "-aes-256-cbc", "-d", "-salt", "-k", SHARED_SECRET, "-a"], stdin_data=clean_cipher.encode('ascii', errors='ignore'))
-        decrypted = dec_raw.decode('utf-8', errors='ignore').strip() if dec_raw else "[Błąd deszyfrowania]"
-        hexchat.prnt(f"\\t🔒\\t{sender}\\t{decrypted}")
+            
+        cipher_b64 = full_message.split("[E2EE]:", 1)[1].strip()
+        if " " in cipher_b64:
+            cipher_b64 = cipher_b64.split()[0]
+
+        try:
+            # Dekodujemy base64 w Pythonie do surowych bajtów binarnych
+            cipher_bytes = base64.b64decode(cipher_b64)
+        except Exception:
+            hexchat.prnt(f"\t🔒\t{sender}\t[Błąd dekodowania Base64]")
+            return hexchat.EAT_ALL
+        
+        # Deszyfrujemy binarne dane (brak flagi -a)
+        dec_raw = run_cmd(["openssl", "enc", "-aes-256-cbc", "-pbkdf2", "-md", "sha256", "-d", "-salt", "-k", SHARED_SECRET], stdin_data=cipher_bytes)
+        
+        if dec_raw:
+            decrypted = dec_raw.decode('utf-8', errors='ignore').strip()
+        else:
+            decrypted = "[Błąd deszyfrowania - zły klucz lub uszkodzony pakiet]"
+            
+        hexchat.prnt(f"\t🔒\t{sender}\t{decrypted}")
         return hexchat.EAT_ALL
     return hexchat.EAT_NONE
 
@@ -103,4 +132,4 @@ hexchat.hook_command("crypto_init", init_dh)
 hexchat.hook_command("crypto_derive", derive_dh)
 hexchat.hook_command("s", secure_send_cb, help="/s <wiadomość> wysyła zaszyfrowany pakiet E2EE")
 hexchat.hook_server("PRIVMSG", message_in_hook)
-hexchat.prnt("Załadowano Pragmatic E2EE v1.4. Szyfruj komendą: /s <tekst>")
+hexchat.prnt("Załadowano Pragmatic E2EE v1.8. Gotowy do testów diagnostycznych.")
