@@ -1,5 +1,7 @@
 IRCrypt – Encryption Layer for IRC
 ==================================
+[![demo](https://i.ytimg.com/vi/v1mXAOH4po8/hqdefault.jpg)](https://www.youtube.com/watch?v=v1mXAOH4po8)
+
 IRC is pretty good protocol, especially if you have normie friendly client, like IRCcloud, The longue (my fav), or convos.chat. But main issue here is lack of E2E.
 
 The current state of affairs is classic fragmentation: standards like FiSH, OTR (Off-the-Record), work, but usually only when both parties use the same client.
@@ -45,5 +47,3 @@ Alice copies your key and enters: /crypto_derive DH_KEY:MC4CAQAw...
 Done! From now on, every line you type in the chat window will automatically be changed to the server-indecipherable string [E2EE]:U2FsdGVkX19.... When Alice receives it, his plugin will automatically decrypt the text on the fly and display it with a lock icon 🔒.
 
 Ephemeral Security: Session private keys are stored in /tmp (which is mounted in RAM as tmpfs in most Linux distributions). After restarting your computer or disabling the WeeChat/HexChat, old conversations cannot be decrypted, even if someone later obtains your shared secret key (Perfect Forward Secrecy).
-
-Demo: https://www.youtube.com/watch?v=v1mXAOH4po8
